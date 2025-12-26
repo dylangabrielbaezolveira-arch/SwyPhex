@@ -6,82 +6,100 @@ namespace SwyPhexLeague.Core
     public class BoostSystem : MonoBehaviour
     {
         [Header("Boost Settings")]
-        [SerializeField] private float maxBoost = 100f;
-        [SerializeField] private float startBoost = 50f;
-        [SerializeField] private float passiveRegen = 2f; // por segundo
-        [SerializeField] private float boostConsumption = 12f; // por segundo
-        [SerializeField] private float dashCost = 18f;
+        public float maxBoost = 100f;
+        public float startBoost = 50f;
+        public float passiveRegen = 2f;
+        public float boostConsumption = 12f;
+        public float dashCost = 18f;
+        public float abilityExtraCost = 5f;
         
-        [Header("UI Reference")]
-        [SerializeField] private Image boostBar;
-        [SerializeField] private Text boostText;
+        [Header("UI References")]
+        public Image boostBar;
+        public Text boostText;
+        
+        [Header("Effects")]
+        public ParticleSystem boostParticles;
+        public AudioSource boostAudio;
         
         [Header("State")]
         private float currentBoost;
         private bool isBoosting;
-        private float boostMultiplier = 1f;
         private float penaltyTimer = 0f;
+        private float boostMultiplier = 1f;
         
-        // Propiedades cosméticas
         private Color boostColor = Color.cyan;
-        private ParticleSystem boostParticles;
-        private AudioSource boostSound;
+        private float originalRegen;
         
         private void Start()
         {
             currentBoost = startBoost;
-            UpdateUI();
+            originalRegen = passiveRegen;
             
-            boostParticles = GetComponentInChildren<ParticleSystem>();
-            boostSound = GetComponent<AudioSource>();
-            
-            if (boostSound)
+            if (boostBar)
             {
-                boostSound.loop = true;
-                boostSound.volume = 0.3f;
+                boostColor = boostBar.color;
             }
+            
+            UpdateUI();
         }
         
         private void Update()
         {
-            // Regeneración pasiva
-            if (!isBoosting && penaltyTimer <= 0f)
-            {
-                RegenerateBoost(passiveRegen * Time.deltaTime);
-            }
-            
-            // Consumo activo
-            if (isBoosting)
-            {
-                float consumption = boostConsumption * Time.deltaTime * boostMultiplier;
-                UseBoost(consumption);
-            }
-            
-            // Penalización por spam
-            if (penaltyTimer > 0f)
-            {
-                penaltyTimer -= Time.deltaTime;
-            }
+            HandleRegeneration();
+            HandleBoostConsumption();
+            HandlePenalty();
             
             UpdateUI();
             UpdateEffects();
+        }
+        
+        private void HandleRegeneration()
+        {
+            if (!isBoosting && penaltyTimer <= 0f)
+            {
+                currentBoost += passiveRegen * Time.deltaTime;
+                currentBoost = Mathf.Min(currentBoost, maxBoost);
+            }
+        }
+        
+        private void HandleBoostConsumption()
+        {
+            if (isBoosting)
+            {
+                currentBoost -= boostConsumption * Time.deltaTime * boostMultiplier;
+                
+                if (currentBoost <= 0f)
+                {
+                    currentBoost = 0f;
+                    StopBoosting();
+                    ApplyBoostPenalty();
+                }
+            }
+        }
+        
+        private void HandlePenalty()
+        {
+            if (penaltyTimer > 0f)
+            {
+                penaltyTimer -= Time.deltaTime;
+                
+                if (penaltyTimer <= 0f)
+                {
+                    passiveRegen = originalRegen;
+                }
+            }
         }
         
         public void UseBoost(float amount = 0f)
         {
             if (amount == 0f)
             {
-                isBoosting = true;
+                if (currentBoost > 0)
+                    isBoosting = true;
                 return;
             }
             
-            currentBoost -= amount;
-            if (currentBoost <= 0f)
-            {
-                currentBoost = 0f;
-                isBoosting = false;
-                ApplyBoostPenalty();
-            }
+            currentBoost = Mathf.Max(0, currentBoost - amount);
         }
         
         public void StopBoosting()
@@ -99,18 +117,15 @@ namespace SwyPhexLeague.Core
             if (currentBoost >= dashCost)
             {
                 currentBoost -= dashCost;
-                
-                // Verificar spam de dash
                 CheckDashSpam();
-                
                 return true;
             }
             return false;
         }
         
-        public bool UseAbilityBoost(float extraCost)
+        public bool UseAbilityBoost()
         {
-            float totalCost = 5f + extraCost;
+            float totalCost = abilityExtraCost;
             if (currentBoost >= totalCost)
             {
                 currentBoost -= totalCost;
@@ -122,10 +137,9 @@ namespace SwyPhexLeague.Core
         public void AddBoostOrb(float amount = 30f)
         {
             RegenerateBoost(amount);
-            AudioManager.Instance.PlaySFX("BoostPickup");
+            Managers.AudioManager.Instance?.PlaySFX("BoostPickup");
             
-            // Efecto visual
-            GameObject effect = ObjectPool.Instance.GetPooledObject("BoostPickup");
+            GameObject effect = Utilities.ObjectPool.Instance?.GetPooledObject("BoostPickup");
             if (effect)
             {
                 effect.transform.position = transform.position;
@@ -135,18 +149,16 @@ namespace SwyPhexLeague.Core
         
         private void CheckDashSpam()
         {
-            // Lógica de detección de spam (simplificada)
             penaltyTimer += 0.5f;
             if (penaltyTimer >= 2f)
             {
-                penaltyTimer = 4f; // Penalización máxima
-                passiveRegen = 0f; // Sin regeneración por 4s
+                penaltyTimer = 4f;
+                passiveRegen = 0f;
             }
         }
         
         private void ApplyBoostPenalty()
         {
-            // Reducción de velocidad cuando se acaba el boost
             CarController car = GetComponent<CarController>();
             if (car)
             {
@@ -156,18 +168,17 @@ namespace SwyPhexLeague.Core
         
         private System.Collections.IEnumerator SpeedPenaltyCoroutine(CarController car)
         {
-            float originalMaxSpeed = 15f;
-            car.GetComponent<CarController>().enabled = false;
+            float originalMaxSpeed = car.maxSpeed;
+            car.maxSpeed *= 0.7f;
             
-            // Aplicar fuerza contraria
             Vector2 oppositeForce = -car.Rigidbody.velocity * 0.3f;
             car.Rigidbody.AddForce(oppositeForce, ForceMode2D.Impulse);
             
             yield return new WaitForSeconds(2f);
             
-            car.GetComponent<CarController>().enabled = true;
+            car.maxSpeed = originalMaxSpeed;
             penaltyTimer = 0f;
-            passiveRegen = 2f; // Restaurar regeneración
+            passiveRegen = originalRegen;
         }
         
         private void UpdateUI()
@@ -182,12 +193,12 @@ namespace SwyPhexLeague.Core
             if (boostText)
             {
                 boostText.text = Mathf.RoundToInt(currentBoost).ToString();
+                boostText.color = boostBar ? boostBar.color : Color.white;
             }
         }
         
         private void UpdateEffects()
         {
-            // Partículas de boost
             if (boostParticles)
             {
                 var emission = boostParticles.emission;
@@ -197,30 +208,35 @@ namespace SwyPhexLeague.Core
                 main.startColor = boostColor;
             }
             
-            // Sonido de boost
-            if (boostSound)
+            if (boostAudio)
             {
-                if (isBoosting && currentBoost > 0 && !boostSound.isPlaying)
+                if (isBoosting && currentBoost > 0)
                 {
-                    boostSound.Play();
+                    if (!boostAudio.isPlaying)
+                        boostAudio.Play();
+                        
+                    boostAudio.volume = Mathf.Lerp(0.1f, 0.3f, currentBoost / maxBoost);
                 }
-                else if ((!isBoosting || currentBoost <= 0) && boostSound.isPlaying)
+                else if (boostAudio.isPlaying)
                 {
-                    boostSound.Stop();
+                    boostAudio.Stop();
                 }
             }
         }
         
-        // Propiedades públicas
-        public float CurrentBoost => currentBoost;
-        public float BoostPercentage => currentBoost / maxBoost;
-        public bool IsBoosting => isBoosting;
-        public bool HasBoost(float required = 20f) => currentBoost >= required;
+        public bool HasBoost(float required = 20f)
+        {
+            return currentBoost >= required;
+        }
         
-        // Personalización
         public void SetBoostColor(Color color)
         {
             boostColor = color;
+            
+            if (boostBar)
+            {
+                boostBar.color = boostColor;
+            }
         }
         
         public void SetBoostParticles(ParticleSystem particles)
@@ -230,9 +246,21 @@ namespace SwyPhexLeague.Core
         
         public void SetBoostSound(AudioClip clip)
         {
-            if (boostSound)
+            if (boostAudio)
             {
-                boostSound.clip = clip;
+                boostAudio.clip = clip;
+            }
+        }
+        
+        public float CurrentBoost => currentBoost;
+        public float BoostPercentage => currentBoost / maxBoost;
+        public bool IsBoosting => isBoosting;
+        
+        private void OnCollisionEnter2D(Collision2D collision)
+        {
+            if (collision.gameObject.CompareTag("Ball"))
+            {
+                RegenerateBoost(10f);
             }
         }
     }
