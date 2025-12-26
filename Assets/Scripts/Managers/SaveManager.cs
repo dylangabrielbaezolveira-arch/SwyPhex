@@ -1,6 +1,7 @@
 using UnityEngine;
 using System;
 using System.IO;
+using System.Collections.Generic;
 
 namespace SwyPhexLeague.Managers
 {
@@ -11,25 +12,25 @@ namespace SwyPhexLeague.Managers
         [System.Serializable]
         public class GameData
         {
-            // Progresión
+            // Player Progression
             public int playerLevel = 1;
             public int playerXP = 0;
             public int totalCredits = 0;
             public int neonTokens = 0;
             
-            // Ranking
-            public string currentLeague = "Bronze";
-            public int leagueDivision = 1;
-            public int rankingPoints = 0;
-            public int highestLeague = 0;
+            // Unlocks
+            public List<string> unlockedCars = new List<string>();
+            public List<string> unlockedSkins = new List<string>();
+            public List<string> unlockedTrails = new List<string>();
+            public List<string> unlockedAvatars = new List<string>();
             
-            // Desbloqueos
-            public string[] unlockedCars;
-            public string[] unlockedSkins;
-            public string[] unlockedTrails;
-            public string[] unlockedAvatars;
+            // Settings
+            public string selectedCar = "PHEX-01";
+            public string selectedSkin = "Default";
+            public string selectedTrail = "Default";
+            public string selectedAvatar = "Default";
             
-            // Estadísticas
+            // Statistics
             public int matchesPlayed = 0;
             public int matchesWon = 0;
             public int goalsScored = 0;
@@ -37,23 +38,27 @@ namespace SwyPhexLeague.Managers
             public int dashCount = 0;
             public float timePlayed = 0f;
             
-            // Configuración
-            public string selectedCar = "PHEX-01";
-            public string selectedSkin = "Default";
-            public string selectedTrail = "Default";
-            public string selectedAvatar = "Default";
+            // Ranking
+            public string currentLeague = "Bronze";
+            public int leagueDivision = 1;
+            public int rankingPoints = 0;
+            public int highestLeague = 0;
             
-            // Logros
-            public bool[] completedAchievements;
+            // Achievements
+            public Dictionary<string, bool> achievements = new Dictionary<string, bool>();
             
-            // Temporada actual
+            // Season Progress
             public int seasonNumber = 1;
             public int seasonProgress = 0;
             public bool[] seasonRewardsClaimed;
+            
+            // Tutorial Completion
+            public bool tutorialCompleted = false;
         }
         
         private GameData gameData;
         private string savePath;
+        private bool isInitialized = false;
         
         private void Awake()
         {
@@ -61,7 +66,7 @@ namespace SwyPhexLeague.Managers
             {
                 Instance = this;
                 DontDestroyOnLoad(gameObject);
-                InitializeSaveSystem();
+                Initialize();
             }
             else
             {
@@ -69,26 +74,29 @@ namespace SwyPhexLeague.Managers
             }
         }
         
-        private void InitializeSaveSystem()
+        private void Initialize()
         {
             #if UNITY_EDITOR
-            savePath = Application.dataPath + "/Saves/gamesave.json";
+            savePath = Application.dataPath + "/Saves/";
             #else
-            savePath = Application.persistentDataPath + "/gamesave.json";
+            savePath = Application.persistentDataPath + "/Saves/";
             #endif
             
-            LoadGame();
-            
-            // Crear datos iniciales si no existen
-            if (gameData == null)
+            if (!Directory.Exists(savePath))
             {
-                gameData = new GameData();
-                SaveGame();
+                Directory.CreateDirectory(savePath);
             }
+            
+            savePath += "gamesave.json";
+            
+            LoadGame();
+            isInitialized = true;
         }
         
         public void SaveGame()
         {
+            if (!isInitialized || gameData == null) return;
+            
             try
             {
                 string jsonData = JsonUtility.ToJson(gameData, true);
@@ -114,28 +122,50 @@ namespace SwyPhexLeague.Managers
                 catch (Exception e)
                 {
                     Debug.LogError($"Load failed: {e.Message}");
-                    gameData = new GameData();
+                    CreateNewGame();
                 }
             }
             else
             {
-                gameData = new GameData();
+                CreateNewGame();
             }
         }
         
-        #region PROGRESSION
+        private void CreateNewGame()
+        {
+            gameData = new GameData();
+            
+            // Unlock default car
+            gameData.unlockedCars.Add("PHEX-01");
+            gameData.selectedCar = "PHEX-01";
+            
+            // Initialize achievements
+            InitializeAchievements();
+            
+            SaveGame();
+        }
+        
+        private void InitializeAchievements()
+        {
+            gameData.achievements["FirstWin"] = false;
+            gameData.achievements["Score10Goals"] = false;
+            gameData.achievements["Play10Matches"] = false;
+            gameData.achievements["ReachGold"] = false;
+            gameData.achievements["CompleteTutorial"] = false;
+        }
+        
+        #region Progression
         
         public void AddXP(int xp)
         {
             gameData.playerXP += xp;
             
-            // Check level up
-            int xpForNextLevel = GetXPForLevel(gameData.playerLevel);
+            int xpForNextLevel = CalculateXPForLevel(gameData.playerLevel);
             while (gameData.playerXP >= xpForNextLevel)
             {
                 gameData.playerXP -= xpForNextLevel;
                 gameData.playerLevel++;
-                xpForNextLevel = GetXPForLevel(gameData.playerLevel);
+                xpForNextLevel = CalculateXPForLevel(gameData.playerLevel);
                 
                 OnLevelUp(gameData.playerLevel);
             }
@@ -143,34 +173,32 @@ namespace SwyPhexLeague.Managers
             SaveGame();
         }
         
-        private int GetXPForLevel(int level)
+        private int CalculateXPForLevel(int level)
         {
             return 1000 + (level - 1) * 250;
         }
         
         private void OnLevelUp(int newLevel)
         {
-            // Recompensas por nivel
             AddCredits(50);
             
             if (newLevel % 5 == 0)
             {
-                // Caja cosmética cada 5 niveles
                 UnlockRandomCosmetic();
             }
             
             if (newLevel == 10 || newLevel == 30 || newLevel == 50)
             {
-                // Auto nuevo en niveles específicos
                 UnlockCarForLevel(newLevel);
             }
             
-            UIManager.Instance.ShowLevelUpNotification(newLevel);
+            // Notificar UI
+            UI.UIManager.Instance?.ShowLevelUpNotification(newLevel);
         }
         
         #endregion
         
-        #region ECONOMY
+        #region Economy
         
         public void AddCredits(int amount)
         {
@@ -195,36 +223,33 @@ namespace SwyPhexLeague.Managers
             SaveGame();
         }
         
+        public bool SpendNeonTokens(int amount)
+        {
+            if (gameData.neonTokens >= amount)
+            {
+                gameData.neonTokens -= amount;
+                SaveGame();
+                return true;
+            }
+            return false;
+        }
+        
         #endregion
         
-        #region UNLOCKS
+        #region Unlocks
         
         public void UnlockCar(string carId)
         {
-            if (!IsCarUnlocked(carId))
+            if (!gameData.unlockedCars.Contains(carId))
             {
-                Array.Resize(ref gameData.unlockedCars, 
-                    (gameData.unlockedCars?.Length ?? 0) + 1);
-                gameData.unlockedCars[gameData.unlockedCars.Length - 1] = carId;
+                gameData.unlockedCars.Add(carId);
                 SaveGame();
             }
         }
         
         public bool IsCarUnlocked(string carId)
         {
-            if (gameData.unlockedCars == null) return false;
-            
-            foreach (string unlockedCar in gameData.unlockedCars)
-            {
-                if (unlockedCar == carId) return true;
-            }
-            return false;
-        }
-        
-        private void UnlockRandomCosmetic()
-        {
-            // Implementar lógica para desbloquear cosmético aleatorio
-            // Basado en probabilidades y lo que ya está desbloqueado
+            return gameData.unlockedCars.Contains(carId);
         }
         
         private void UnlockCarForLevel(int level)
@@ -243,18 +268,122 @@ namespace SwyPhexLeague.Managers
             }
         }
         
+        private void UnlockRandomCosmetic()
+        {
+            // Implementar lógica para desbloquear cosmético aleatorio
+            // Basado en probabilidades
+        }
+        
+        public void UnlockSkin(string skinId)
+        {
+            if (!gameData.unlockedSkins.Contains(skinId))
+            {
+                gameData.unlockedSkins.Add(skinId);
+                SaveGame();
+            }
+        }
+        
+        public void UnlockTrail(string trailId)
+        {
+            if (!gameData.unlockedTrails.Contains(trailId))
+            {
+                gameData.unlockedTrails.Add(trailId);
+                SaveGame();
+            }
+        }
+        
+        public bool IsLevelUnlocked(int levelIndex)
+        {
+            // Niveles 0-3 desbloqueados por defecto
+            if (levelIndex < 4) return true;
+            
+            // Niveles posteriores requieren progresión
+            return gameData.playerLevel >= levelIndex * 5;
+        }
+        
         #endregion
         
-        #region RANKING
+        #region Statistics
+        
+        public void RecordMatch(bool won, int goals, int saves, int dashes, float time)
+        {
+            gameData.matchesPlayed++;
+            if (won) gameData.matchesWon++;
+            gameData.goalsScored += goals;
+            gameData.savesMade += saves;
+            gameData.dashCount += dashes;
+            gameData.timePlayed += time;
+            
+            // XP por partida
+            int xpEarned = 100 + (won ? 50 : 0) + (goals * 10) + (saves * 5);
+            AddXP(xpEarned);
+            
+            // Créditos por partida
+            int creditsEarned = 25 + (won ? 25 : 0);
+            AddCredits(creditsEarned);
+            
+            // Logros
+            CheckAchievements();
+            
+            SaveGame();
+        }
+        
+        private void CheckAchievements()
+        {
+            if (!gameData.achievements["FirstWin"] && gameData.matchesWon > 0)
+            {
+                UnlockAchievement("FirstWin");
+            }
+            
+            if (!gameData.achievements["Score10Goals"] && gameData.goalsScored >= 10)
+            {
+                UnlockAchievement("Score10Goals");
+            }
+            
+            if (!gameData.achievements["Play10Matches"] && gameData.matchesPlayed >= 10)
+            {
+                UnlockAchievement("Play10Matches");
+            }
+        }
+        
+        private void UnlockAchievement(string achievementId)
+        {
+            if (gameData.achievements.ContainsKey(achievementId))
+            {
+                gameData.achievements[achievementId] = true;
+                
+                // Recompensa por logro
+                switch (achievementId)
+                {
+                    case "FirstWin":
+                        AddCredits(100);
+                        break;
+                    case "Score10Goals":
+                        AddCredits(250);
+                        break;
+                    case "Play10Matches":
+                        AddNeonTokens(50);
+                        break;
+                }
+                
+                SaveGame();
+                
+                // Notificar UI
+                UI.UIManager.Instance?.ShowAchievementUnlocked(achievementId);
+            }
+        }
+        
+        #endregion
+        
+        #region Ranking
         
         public void UpdateRanking(int rpChange)
         {
             gameData.rankingPoints += rpChange;
+            gameData.rankingPoints = Mathf.Max(0, gameData.rankingPoints);
             
-            // Actualizar liga si es necesario
             UpdateLeague();
             
-            // Actualizar máxima liga
             int currentLeagueValue = LeagueToValue(gameData.currentLeague);
             if (currentLeagueValue > gameData.highestLeague)
             {
@@ -267,7 +396,6 @@ namespace SwyPhexLeague.Managers
         private void UpdateLeague()
         {
             (string league, int division) = GetLeagueForRP(gameData.rankingPoints);
-            
             gameData.currentLeague = league;
             gameData.leagueDivision = division;
         }
@@ -298,28 +426,14 @@ namespace SwyPhexLeague.Managers
         
         #endregion
         
-        #region STATISTICS
+        #region Getters
         
-        public void RecordMatch(bool won, int goals, int saves, int dashes, float time)
-        {
-            gameData.matchesPlayed++;
-            if (won) gameData.matchesWon++;
-            gameData.goalsScored += goals;
-            gameData.savesMade += saves;
-            gameData.dashCount += dashes;
-            gameData.timePlayed += time;
-            
-            // XP por partida
-            int xpEarned = 100 + (won ? 50 : 0) + (goals * 10) + (saves * 5);
-            AddXP(xpEarned);
-            
-            SaveGame();
-        }
-        
-        #endregion
-        
-        // Propiedades públicas
-        public GameData CurrentData => gameData;
+        public int PlayerLevel => gameData.playerLevel;
+        public int Credits => gameData.totalCredits;
+        public int NeonTokens => gameData.neonTokens;
+        public int RankingPoints => gameData.rankingPoints;
+        public string CurrentLeague => gameData.currentLeague;
+        public int LeagueDivision => gameData.leagueDivision;
         
         public string SelectedCar
         {
@@ -331,9 +445,45 @@ namespace SwyPhexLeague.Managers
             }
         }
         
-        public int PlayerLevel => gameData.playerLevel;
-        public int Credits => gameData.totalCredits;
-        public int RankingPoints => gameData.rankingPoints;
-        public string CurrentLeague => gameData.currentLeague;
+        public string SelectedSkin
+        {
+            get => gameData.selectedSkin;
+            set
+            {
+                gameData.selectedSkin = value;
+                SaveGame();
+            }
+        }
+        
+        public List<string> GetUnlockedCars() => new List<string>(gameData.unlockedCars);
+        public List<string> GetUnlockedSkins() => new List<string>(gameData.unlockedSkins);
+        
+        public GameData GetGameData() => gameData;
+        
+        #endregion
+        
+        private void OnApplicationPause(bool pauseStatus)
+        {
+            if (pauseStatus)
+            {
+                SaveGame();
+            }
+        }
+        
+        private void OnApplicationQuit()
+        {
+            SaveGame();
+        }
+        
+        public void ResetSave()
+        {
+            if (File.Exists(savePath))
+            {
+                File.Delete(savePath);
+            }
+            
+            CreateNewGame();
+            LoadGame();
+        }
     }
 }
