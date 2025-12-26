@@ -1,6 +1,5 @@
 using UnityEngine;
 using System.Collections;
-using System.Collections.Generic;
 
 namespace SwyPhexLeague.Gameplay
 {
@@ -9,20 +8,30 @@ namespace SwyPhexLeague.Gameplay
         public static GameManager Instance { get; private set; }
         
         [Header("Game Settings")]
-        [SerializeField] private int maxScore = 5;
-        [SerializeField] private float goalResetTime = 2f;
-        [SerializeField] private float matchEndDelay = 3f;
+        public int maxScore = 5;
+        public float matchTime = 120f;
+        public Vector2 ballSpawnPoint = Vector2.zero;
+        
+        [Header("Teams")]
+        public Team[] teams;
+        
+        [System.Serializable]
+        public class Team
+        {
+            public string name = "Blue";
+            public Color color = Color.blue;
+            public int score = 0;
+            public Transform[] spawnPoints;
+        }
+        
+        [Header("State")]
+        private float currentTime = 0f;
+        private bool isGameActive = false;
+        private bool isPaused = false;
         
         [Header("References")]
-        [SerializeField] private Transform ballSpawnPoint;
-        [SerializeField] private Goal[] teamGoals;
-        [SerializeField] private Transform[] playerSpawns;
-        
-        [Header("Game State")]
-        private int[] teamScores = new int[2];
-        private bool isGameActive = true;
-        private BallPhysics ball;
-        private List<CarController> players = new List<CarController>();
+        public Core.BallPhysics ball;
+        public GoalSystem goalSystem;
         
         private void Awake()
         {
@@ -33,6 +42,7 @@ namespace SwyPhexLeague.Gameplay
             else
             {
                 Destroy(gameObject);
+                return;
             }
         }
         
@@ -43,46 +53,73 @@ namespace SwyPhexLeague.Gameplay
         
         private void InitializeGame()
         {
-            // Encontrar pelota
-            ball = FindObjectOfType<BallPhysics>();
             if (!ball)
             {
-                Debug.LogError("No ball found in scene!");
-                return;
+                ball = FindObjectOfType<Core.BallPhysics>();
             }
             
-            // Encontrar jugadores
-            CarController[] foundPlayers = FindObjectsOfType<CarController>();
-            players.AddRange(foundPlayers);
-            
-            // Configurar metas
-            foreach (Goal goal in teamGoals)
+            if (!goalSystem)
             {
-                goal.OnGoalScored += HandleGoalScored;
+                goalSystem = FindObjectOfType<GoalSystem>();
+                if (goalSystem)
+                {
+                    goalSystem.OnGoalScored += HandleGoalScored;
+                }
             }
             
-            // Inicializar puntajes
-            teamScores[0] = 0;
-            teamScores[1] = 0;
+            ResetTeams();
+            SetupPlayers();
             
-            UpdateScoreUI();
+            currentTime = matchTime;
+            isGameActive = true;
             
-            // Posicionar jugadores
-            PositionPlayers();
-            
-            // Iniciar pelota
-            ResetBall();
+            UI.UIManager.Instance?.UpdateScore(teams[0].score, teams[1].score);
+            UI.UIManager.Instance?.StartTimer(matchTime);
         }
         
-        private void PositionPlayers()
+        private void ResetTeams()
         {
-            if (playerSpawns.Length == 0 || players.Count == 0) return;
-            
-            for (int i = 0; i < players.Count; i++)
+            foreach (Team team in teams)
             {
-                int spawnIndex = i % playerSpawns.Length;
-                players[i].transform.position = playerSpawns[spawnIndex].position;
-                players[i].ResetVelocity();
+                team.score = 0;
+            }
+        }
+        
+        private void SetupPlayers()
+        {
+            CarController[] players = FindObjectsOfType<CarController>();
+            
+            for (int i = 0; i < players.Length; i++)
+            {
+                Team team = teams[i % teams.Length];
+                if (team.spawnPoints.Length > 0)
+                {
+                    int spawnIndex = i / teams.Length;
+                    if (spawnIndex < team.spawnPoints.Length)
+                    {
+                        players[i].TeleportTo(team.spawnPoints[spawnIndex].position);
+                    }
+                }
+            }
+        }
+        
+        private void Update()
+        {
+            if (isGameActive && !isPaused)
+            {
+                UpdateTimer();
+            }
+        }
+        
+        private void UpdateTimer()
+        {
+            currentTime -= Time.deltaTime;
+            UI.UIManager.Instance?.UpdateTimer(currentTime);
+            
+            if (currentTime <= 0f)
+            {
+                currentTime = 0f;
+                EndGame();
             }
         }
         
@@ -90,24 +127,18 @@ namespace SwyPhexLeague.Gameplay
         {
             if (!isGameActive) return;
             
-            // Incrementar puntaje
-            teamScores[teamNumber]++;
-            
-            // Actualizar UI
-            UpdateScoreUI();
-            
-            // Mostrar notificación
-            string teamColor = teamNumber == 0 ? "Blue Team" : "Orange Team";
-            UIManager.Instance.ShowGoalNotification(scorerName, teamColor);
-            
-            // Verificar si hay ganador
-            if (teamScores[teamNumber] >= maxScore)
+            if (teamNumber >= 0 && teamNumber < teams.Length)
             {
-                EndGame();
-                return;
+                teams[teamNumber].score++;
+                UI.UIManager.Instance?.UpdateScore(teams[0].score, teams[1].score);
+                
+                if (teams[teamNumber].score >= maxScore)
+                {
+                    EndGame();
+                    return;
+                }
             }
             
-            // Resetear después de delay
             StartCoroutine(ResetAfterGoal());
         }
         
@@ -115,25 +146,25 @@ namespace SwyPhexLeague.Gameplay
         {
             isGameActive = false;
             
-            yield return new WaitForSeconds(goalResetTime);
+            yield return new WaitForSeconds(2f);
             
             ResetBall();
-            PositionPlayers();
+            ResetPlayers();
             
             isGameActive = true;
         }
         
-        public void ResetBall()
+        private void ResetBall()
         {
-            if (ball && ballSpawnPoint)
+            if (ball)
             {
-                ball.ResetBall(ballSpawnPoint.position);
+                ball.ResetBall(ballSpawnPoint);
             }
         }
         
-        private void UpdateScoreUI()
+        private void ResetPlayers()
         {
-            UIManager.Instance.UpdateScore(teamScores[0], teamScores[1]);
+            SetupPlayers();
         }
         
         public void EndGame()
@@ -142,149 +173,108 @@ namespace SwyPhexLeague.Gameplay
             
             isGameActive = false;
             
-            // Determinar ganador
-            int winningTeam = teamScores[0] > teamScores[1] ? 0 : 
-                             teamScores[1] > teamScores[0] ? 1 : -1;
-            
-            // Mostrar resultados
-            ShowMatchResults(winningTeam);
-            
-            // Guardar progreso si es ranked
-            if (IsRankedMatch())
+            int winningTeam = -1;
+            if (teams[0].score > teams[1].score)
             {
-                SaveMatchResults(winningTeam);
+                winningTeam = 0;
+            }
+            else if (teams[1].score > teams[0].score)
+            {
+                winningTeam = 1;
             }
             
-            // Volver al menú después de delay
-            StartCoroutine(ReturnToMenuAfterDelay());
+            ShowResults(winningTeam);
+            SaveMatchResults(winningTeam);
+            
+            StartCoroutine(ReturnToMenuAfterDelay(5f));
         }
         
-        private void ShowMatchResults(int winningTeam)
+        private void ShowResults(int winningTeam)
         {
-            string resultText;
+            string resultText = winningTeam == -1 ? "DRAW!" : $"{teams[winningTeam].name} WINS!";
             
-            if (winningTeam == -1)
-            {
-                resultText = "DRAW!";
-            }
-            else
-            {
-                resultText = $"TEAM {winningTeam + 1} WINS!";
-            }
-            
-            // Mostrar panel de resultados
-            UIManager.Instance.ShowMatchResults(
-                resultText, 
-                teamScores[0], 
-                teamScores[1]
+            UI.UIManager.Instance?.ShowMatchResults(
+                resultText,
+                teams[0].score,
+                teams[1].score
             );
             
-            // Efectos
-            AudioManager.Instance.PlaySFX(winningTeam == -1 ? "Draw" : "Victory");
+            Managers.AudioManager.Instance?.PlaySFX(
+                winningTeam == -1 ? "Draw" : "Victory"
+            );
             
             if (winningTeam != -1)
             {
-                // Confetti para el equipo ganador
-                SpawnConfetti(winningTeam == 0 ? Color.blue : Color.orange);
+                CreateConfetti(teams[winningTeam].color);
             }
         }
         
-        private void SpawnConfetti(Color teamColor)
+        private void CreateConfetti(Color color)
         {
-            GameObject confetti = ObjectPool.Instance.GetPooledObject("Confetti");
+            GameObject confetti = Utilities.ObjectPool.Instance?.GetPooledObject("Confetti");
             if (confetti)
             {
-                confetti.transform.position = Vector3.zero;
+                confetti.transform.position = Vector2.zero;
                 
-                // Configurar color del equipo
                 ParticleSystem ps = confetti.GetComponent<ParticleSystem>();
-                var main = ps.main;
-                main.startColor = teamColor;
+                if (ps)
+                {
+                    var main = ps.main;
+                    main.startColor = color;
+                }
                 
                 confetti.SetActive(true);
             }
         }
         
-        private bool IsRankedMatch()
-        {
-            // Verificar si es partida ranked
-            return SceneManager.GetActiveScene().name.Contains("Ranked");
-        }
-        
         private void SaveMatchResults(int winningTeam)
         {
-            // Calcular cambio de RP
-            int rpChange = CalculateRPChange(winningTeam);
-            
-            // Actualizar ranking
-            SaveManager.Instance.UpdateRanking(rpChange);
-            
-            // Otorgar créditos
-            int creditsEarned = CalculateCreditsEarned();
-            SaveManager.Instance.AddCredits(creditsEarned);
-            
             // Guardar progreso
-            SaveManager.Instance.SaveGame();
+            Managers.SaveManager.Instance?.RecordMatch(
+                winningTeam == 0, // Asumiendo que el jugador es equipo 0
+                teams[0].score,
+                0, // saves
+                0, // dashes
+                matchTime - currentTime
+            );
         }
         
-        private int CalculateRPChange(int winningTeam)
+        private IEnumerator ReturnToMenuAfterDelay(float delay)
         {
-            // Lógica simplificada de ELO
-            int baseRP = 15;
+            yield return new WaitForSeconds(delay);
             
-            // Ajustar por diferencia de skill
-            // Implementar lógica completa según sistema de ranking
-            
-            return winningTeam == 0 ? baseRP : -baseRP;
+            UI.UIManager.Instance?.ReturnToMainMenu();
         }
         
-        private int CalculateCreditsEarned()
+        public void PauseGame()
         {
-            int baseCredits = 25;
-            
-            // Bonus por victoria
-            if (teamScores[0] > teamScores[1])
-                baseCredits += 25;
-            
-            // Bonus por tiempo
-            float timeBonus = Mathf.Clamp(UIManager.Instance.GameTimer / 120f, 0.5f, 1.5f);
-            baseCredits = Mathf.RoundToInt(baseCredits * timeBonus);
-            
-            return baseCredits;
+            isPaused = true;
+            Time.timeScale = 0f;
         }
         
-        private IEnumerator ReturnToMenuAfterDelay()
+        public void ResumeGame()
         {
-            yield return new WaitForSeconds(matchEndDelay);
-            
-            UIManager.Instance.ReturnToMenu();
+            isPaused = false;
+            Time.timeScale = 1f;
         }
+        
+        public void RestartGame()
+        {
+            Time.timeScale = 1f;
+            UnityEngine.SceneManagement.SceneManager.LoadScene(
+                UnityEngine.SceneManagement.SceneManager.GetActiveScene().name
+            );
+        }
+        
+        public Vector2 BallSpawnPoint => ballSpawnPoint;
+        public bool IsGameActive => isGameActive;
         
         private void OnDestroy()
         {
-            // Desuscribirse de eventos
-            foreach (Goal goal in teamGoals)
+            if (goalSystem)
             {
-                if (goal)
-                    goal.OnGoalScored -= HandleGoalScored;
+                goalSystem.OnGoalScored -= HandleGoalScored;
             }
-        }
-        
-        // Propiedades públicas
-        public bool IsGameActive => isGameActive;
-        public BallPhysics Ball => ball;
-        
-        public void AddPlayer(CarController player)
-        {
-            if (!players.Contains(player))
-            {
-                players.Add(player);
-            }
-        }
-        
-        public void RemovePlayer(CarController player)
-        {
-            players.Remove(player);
         }
     }
 }
