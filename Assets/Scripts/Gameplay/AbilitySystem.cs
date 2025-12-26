@@ -6,40 +6,48 @@ namespace SwyPhexLeague.Gameplay
     public class AbilitySystem : MonoBehaviour
     {
         [System.Serializable]
-        public class AbilityData
+        public class Ability
         {
-            public string abilityName;
+            public string name;
             public float cooldown = 8f;
             public float boostCost = 5f;
             public Sprite icon;
-            public GameObject visualEffect;
+            public GameObject effectPrefab;
             
             [HideInInspector] public float currentCooldown = 0f;
             [HideInInspector] public bool isActive = false;
         }
         
-        [Header("Ability Settings")]
-        [SerializeField] private AbilityData[] abilities;
-        [SerializeField] private int currentAbilityIndex = 0;
+        [Header("Abilities")]
+        public Ability[] abilities;
+        public int currentAbilityIndex = 0;
         
-        [Header("UI References")]
-        [SerializeField] private Image abilityIcon;
-        [SerializeField] private Image cooldownOverlay;
-        [SerializeField] private Text cooldownText;
+        [Header("UI")]
+        public Image abilityIcon;
+        public Image cooldownOverlay;
+        public Text cooldownText;
         
         [Header("Components")]
         private CarController carController;
-        private BoostSystem boostSystem;
+        private Core.BoostSystem boostSystem;
         
         private void Awake()
         {
             carController = GetComponent<CarController>();
-            boostSystem = GetComponent<BoostSystem>();
+            boostSystem = GetComponent<Core.BoostSystem>();
             
-            // Inicializar habilidades
+            if (abilities.Length > 0)
+            {
+                InitializeAbilities();
+            }
+        }
+        
+        private void InitializeAbilities()
+        {
             foreach (var ability in abilities)
             {
                 ability.currentCooldown = 0f;
+                ability.isActive = false;
             }
             
             UpdateUI();
@@ -47,7 +55,12 @@ namespace SwyPhexLeague.Gameplay
         
         private void Update()
         {
-            // Actualizar cooldowns
+            UpdateCooldowns();
+            UpdateUI();
+        }
+        
+        private void UpdateCooldowns()
+        {
             for (int i = 0; i < abilities.Length; i++)
             {
                 if (abilities[i].currentCooldown > 0f)
@@ -60,51 +73,38 @@ namespace SwyPhexLeague.Gameplay
                     }
                 }
             }
-            
-            UpdateUI();
         }
         
         public void ActivateAbility()
         {
             if (abilities.Length == 0) return;
             
-            AbilityData ability = abilities[currentAbilityIndex];
+            Ability ability = abilities[currentAbilityIndex];
             
-            // Verificar condiciones
             if (ability.currentCooldown > 0f) return;
             if (!boostSystem.HasBoost(ability.boostCost + 20f)) return;
+            if (!boostSystem.UseAbilityBoost()) return;
             
-            // Consumir boost extra
-            if (!boostSystem.UseAbilityBoost(ability.boostCost)) return;
+            bool success = ActivateSpecificAbility(ability);
             
-            // Activar habilidad específica
-            bool activated = ActivateSpecificAbility(ability);
-            
-            if (activated)
+            if (success)
             {
-                // Iniciar cooldown
                 ability.currentCooldown = ability.cooldown;
                 ability.isActive = true;
                 
-                // Efectos de sonido
-                AudioManager.Instance.PlaySFX("AbilityActivate");
+                Managers.AudioManager.Instance?.PlaySFX("AbilityActivate");
                 
-                // Efecto visual
-                if (ability.visualEffect)
+                if (ability.effectPrefab)
                 {
-                    GameObject effect = Instantiate(
-                        ability.visualEffect, 
-                        transform.position, 
-                        Quaternion.identity
-                    );
+                    GameObject effect = Instantiate(ability.effectPrefab, transform.position, Quaternion.identity);
                     Destroy(effect, 3f);
                 }
             }
         }
         
-        private bool ActivateSpecificAbility(AbilityData ability)
+        private bool ActivateSpecificAbility(Ability ability)
         {
-            switch (ability.abilityName)
+            switch (ability.name)
             {
                 case "PulseDash":
                     return ActivatePulseDash();
@@ -115,7 +115,7 @@ namespace SwyPhexLeague.Gameplay
                 case "ShockDrop":
                     return ActivateShockDrop();
                 default:
-                    Debug.LogWarning($"Habilidad desconocida: {ability.abilityName}");
+                    Debug.LogWarning($"Unknown ability: {ability.name}");
                     return false;
             }
         }
@@ -128,9 +128,7 @@ namespace SwyPhexLeague.Gameplay
                 dashDirection = transform.right;
             }
             
-            carController.ApplyDash(dashDirection, 25f);
-            
-            // Efecto de invencibilidad breve
+            carController.ApplyExternalForce(dashDirection * 25f);
             StartCoroutine(BriefInvincibility(0.3f));
             
             return true;
@@ -138,14 +136,10 @@ namespace SwyPhexLeague.Gameplay
         
         private bool ActivateMagnetCore()
         {
-            // Encontrar pelota en escena
-            BallPhysics ball = FindObjectOfType<BallPhysics>();
+            Core.BallPhysics ball = FindObjectOfType<Core.BallPhysics>();
             if (!ball) return false;
             
-            // Aplicar magnetismo a la pelota
-            ball.SetMagnetized(transform, 50f, 1.5f);
-            
-            // Penalización de velocidad
+            ball.SetMagnetized(transform, 1.5f);
             carController.Rigidbody.velocity *= 0.8f;
             
             return true;
@@ -153,37 +147,30 @@ namespace SwyPhexLeague.Gameplay
         
         private bool ActivateGravityFlip()
         {
-            // Invertir gravedad en área
-            Collider2D[] colliders = Physics2D.OverlapCircleAll(
-                transform.position, 
-                4f
-            );
+            Collider2D[] colliders = Physics2D.OverlapCircleAll(transform.position, 4f);
             
             foreach (var col in colliders)
             {
                 Rigidbody2D rb = col.GetComponent<Rigidbody2D>();
                 if (rb && rb != carController.Rigidbody)
                 {
-                    // Aplicar fuerza de gravedad invertida
-                    Vector2 force = -GravityManager.Instance.CurrentGravity * 20f;
+                    Vector2 force = -Core.GravityManager.Instance.CurrentGravity * 20f;
                     rb.AddForce(force, ForceMode2D.Impulse);
                     
-                    // Efecto en pelota
-                    BallPhysics ball = col.GetComponent<BallPhysics>();
+                    Core.BallPhysics ball = col.GetComponent<Core.BallPhysics>();
                     if (ball)
                     {
-                        ball.ApplyGravityShock(-GravityManager.Instance.CurrentGravity, 1f);
+                        ball.ApplyGravityShock(force);
                     }
                 }
             }
             
-            // Efecto visual de área
-            GameObject areaEffect = ObjectPool.Instance.GetPooledObject("GravityField");
-            if (areaEffect)
+            GameObject effect = Utilities.ObjectPool.Instance?.GetPooledObject("GravityField");
+            if (effect)
             {
-                areaEffect.transform.position = transform.position;
-                areaEffect.transform.localScale = Vector3.one * 8f;
-                areaEffect.SetActive(true);
+                effect.transform.position = transform.position;
+                effect.transform.localScale = Vector3.one * 8f;
+                effect.SetActive(true);
             }
             
             return true;
@@ -191,10 +178,8 @@ namespace SwyPhexLeague.Gameplay
         
         private bool ActivateShockDrop()
         {
-            // Crear zona de choque en el suelo
             Vector2 dropPosition = transform.position;
             
-            // Si está en aire, caer rápidamente
             if (!carController.IsGrounded)
             {
                 carController.Rigidbody.velocity = new Vector2(
@@ -204,18 +189,14 @@ namespace SwyPhexLeague.Gameplay
                 dropPosition = (Vector2)transform.position + Vector2.down * 2f;
             }
             
-            // Crear zona de efecto
-            GameObject shockZone = ObjectPool.Instance.GetPooledObject("ShockZone");
+            GameObject shockZone = Utilities.ObjectPool.Instance?.GetPooledObject("ShockZone");
             if (shockZone)
             {
                 shockZone.transform.position = dropPosition;
                 shockZone.SetActive(true);
-                
-                // Configurar duración
                 Destroy(shockZone, 2.5f);
             }
             
-            // Aplicar efecto a enemigos cercanos
             ApplyShockEffect(dropPosition);
             
             return true;
@@ -230,18 +211,15 @@ namespace SwyPhexLeague.Gameplay
                 CarController enemyCar = col.GetComponent<CarController>();
                 if (enemyCar && enemyCar != carController)
                 {
-                    // Ralentizar
                     enemyCar.Rigidbody.velocity *= 0.6f;
                     
-                    // Interrumpir habilidades
                     AbilitySystem enemyAbility = enemyCar.GetComponent<AbilitySystem>();
                     if (enemyAbility)
                     {
                         enemyAbility.InterruptAbility();
                     }
                     
-                    // Efecto visual
-                    GameObject shockEffect = ObjectPool.Instance.GetPooledObject("ShockEffect");
+                    GameObject shockEffect = Utilities.ObjectPool.Instance?.GetPooledObject("ShockEffect");
                     if (shockEffect)
                     {
                         shockEffect.transform.position = enemyCar.transform.position;
@@ -255,12 +233,15 @@ namespace SwyPhexLeague.Gameplay
         private System.Collections.IEnumerator BriefInvincibility(float duration)
         {
             SpriteRenderer renderer = GetComponentInChildren<SpriteRenderer>();
-            Color originalColor = renderer.color;
+            if (!renderer) yield break;
             
+            Color originalColor = renderer.color;
             float timer = 0f;
+            
             while (timer < duration)
             {
-                renderer.color = Color.Lerp(originalColor, Color.clear, Mathf.PingPong(timer * 10f, 1f));
+                float alpha = Mathf.PingPong(timer * 10f, 1f);
+                renderer.color = Color.Lerp(originalColor, Color.clear, alpha);
                 timer += Time.deltaTime;
                 yield return null;
             }
@@ -272,14 +253,13 @@ namespace SwyPhexLeague.Gameplay
         {
             if (abilities.Length == 0) return;
             
-            AbilityData ability = abilities[currentAbilityIndex];
+            Ability ability = abilities[currentAbilityIndex];
             if (ability.isActive)
             {
                 ability.currentCooldown = Mathf.Max(ability.currentCooldown - 2f, 0f);
                 ability.isActive = false;
                 
-                // Efecto de interrupción
-                AudioManager.Instance.PlaySFX("AbilityInterrupted");
+                Managers.AudioManager.Instance?.PlaySFX("AbilityInterrupted");
             }
         }
         
@@ -287,7 +267,7 @@ namespace SwyPhexLeague.Gameplay
         {
             if (abilities.Length == 0) return;
             
-            AbilityData ability = abilities[currentAbilityIndex];
+            Ability ability = abilities[currentAbilityIndex];
             
             if (abilityIcon && ability.icon)
             {
@@ -324,8 +304,7 @@ namespace SwyPhexLeague.Gameplay
             }
         }
         
-        // Propiedades públicas
-        public AbilityData CurrentAbility => 
+        public Ability CurrentAbility => 
             abilities.Length > 0 ? abilities[currentAbilityIndex] : null;
             
         public bool IsAbilityReady => 
