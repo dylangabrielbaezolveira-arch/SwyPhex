@@ -6,50 +6,67 @@ namespace SwyPhexLeague.Core
     public class CarController : MonoBehaviour
     {
         [Header("Car Stats")]
-        [SerializeField] private float maxSpeed = 15f;
-        [SerializeField] private float acceleration = 35f;
-        [SerializeField] private float brakeForce = 45f;
-        [SerializeField] private float turnSpeed = 3.5f;
-        [SerializeField] private float jumpForce = 12f;
-        [SerializeField] private float airControl = 0.8f;
-        [SerializeField] private float rotationSpeed = 180f;
+        public float maxSpeed = 15f;
+        public float acceleration = 35f;
+        public float brakeForce = 45f;
+        public float turnSpeed = 3.5f;
+        public float jumpForce = 12f;
+        public float airControl = 0.8f;
+        public float rotationSpeed = 180f;
+        public float dashForce = 25f;
         
         [Header("Components")]
         private Rigidbody2D rb;
         private BoostSystem boostSystem;
-        private AbilitySystem abilitySystem;
+        private Gameplay.AbilitySystem abilitySystem;
+        private SpriteRenderer spriteRenderer;
         
         [Header("State")]
         private bool isGrounded;
         private bool isJumping;
-        private float currentSpeed;
+        private float lastJumpTime;
+        private float jumpGracePeriod = 0.15f;
+        private Vector2 groundNormal;
+        private bool canDash = true;
+        private float dashCooldown = 1.5f;
+        
+        [Header("Visual")]
+        public Transform carVisual;
+        public ParticleSystem boostParticles;
+        public ParticleSystem jumpParticles;
+        public TrailRenderer[] trails;
+        
+        [Header("Input")]
         private float horizontalInput;
         private bool jumpInput;
         private bool jumpHeld;
-        private Vector2 groundNormal;
-        
-        [Header("Visual")]
-        [SerializeField] private Transform carVisual;
-        [SerializeField] private ParticleSystem boostParticles;
-        [SerializeField] private TrailRenderer[] trails;
+        private bool boostInput;
+        private bool abilityInput;
         
         private void Awake()
         {
             rb = GetComponent<Rigidbody2D>();
             boostSystem = GetComponent<BoostSystem>();
-            abilitySystem = GetComponent<AbilitySystem>();
+            abilitySystem = GetComponent<Gameplay.AbilitySystem>();
+            spriteRenderer = GetComponentInChildren<SpriteRenderer>();
             
-            // Configurar física
+            SetupPhysics();
+        }
+        
+        private void SetupPhysics()
+        {
             rb.mass = 1.2f;
             rb.drag = 0.4f;
             rb.angularDrag = 2f;
             rb.gravityScale = 1f;
+            rb.constraints = RigidbodyConstraints2D.FreezeRotation;
         }
         
         private void Update()
         {
             GetInput();
-            HandleJump();
+            HandleJumpInput();
+            HandleAbility();
             UpdateVisuals();
         }
         
@@ -58,32 +75,16 @@ namespace SwyPhexLeague.Core
             CheckGrounded();
             HandleMovement();
             HandleRotation();
+            HandleBoost();
         }
         
         private void GetInput()
         {
-            // Input móvil (configurable)
-            horizontalInput = InputManager.Instance.HorizontalAxis;
-            jumpInput = InputManager.Instance.JumpPressed;
-            jumpHeld = InputManager.Instance.JumpHeld;
-            
-            // Boost activado
-            if (InputManager.Instance.BoostHeld && boostSystem.HasBoost())
-            {
-                boostSystem.UseBoost();
-                if (boostParticles && !boostParticles.isPlaying)
-                    boostParticles.Play();
-            }
-            else if (boostParticles && boostParticles.isPlaying)
-            {
-                boostParticles.Stop();
-            }
-            
-            // Habilidad
-            if (InputManager.Instance.AbilityPressed)
-            {
-                abilitySystem?.ActivateAbility();
-            }
+            horizontalInput = InputManager.Instance.GetHorizontalAxis();
+            jumpInput = InputManager.Instance.GetJumpDown();
+            jumpHeld = InputManager.Instance.GetJump();
+            boostInput = InputManager.Instance.GetBoost();
+            abilityInput = InputManager.Instance.GetAbilityDown();
         }
         
         private void CheckGrounded()
@@ -100,12 +101,15 @@ namespace SwyPhexLeague.Core
             if (isGrounded)
             {
                 groundNormal = hit.normal;
-                isJumping = false;
                 
-                // Recuperar boost al tocar suelo
-                if (rb.velocity.y <= 0.1f)
-                    boostSystem?.RegenerateBoost(Time.fixedDeltaTime * 2f);
+                if (Time.time - lastJumpTime > 0.2f)
+                    isJumping = false;
+                    
+                boostSystem?.RegenerateBoost(Time.fixedDeltaTime * 2f);
             }
+            
+            Debug.DrawRay(transform.position, Vector2.down * 0.6f, 
+                         isGrounded ? Color.green : Color.red);
         }
         
         private void HandleMovement()
@@ -113,23 +117,20 @@ namespace SwyPhexLeague.Core
             float currentAcceleration = acceleration;
             float currentMaxSpeed = maxSpeed;
             
-            // Modificadores
             if (!isGrounded)
             {
                 currentAcceleration *= airControl;
                 currentMaxSpeed *= 0.8f;
             }
             
-            if (boostSystem.IsBoosting)
+            if (boostSystem?.IsBoosting == true)
             {
                 currentAcceleration *= 1.5f;
                 currentMaxSpeed *= 1.3f;
             }
             
-            // Fuerza de movimiento
             Vector2 moveForce = Vector2.right * horizontalInput * currentAcceleration;
             
-            // Aplicar en dirección del suelo si está en pendiente
             if (isGrounded && Mathf.Abs(groundNormal.x) > 0.1f)
             {
                 moveForce = Vector2.Perpendicular(groundNormal) * horizontalInput * currentAcceleration;
@@ -137,7 +138,6 @@ namespace SwyPhexLeague.Core
             
             rb.AddForce(moveForce);
             
-            // Limitar velocidad horizontal
             Vector2 velocity = rb.velocity;
             if (Mathf.Abs(velocity.x) > currentMaxSpeed)
             {
@@ -145,7 +145,6 @@ namespace SwyPhexLeague.Core
                 rb.velocity = velocity;
             }
             
-            // Frenado
             if (Mathf.Abs(horizontalInput) < 0.1f && isGrounded)
             {
                 Vector2 brakeForceVector = -velocity * brakeForce * Time.fixedDeltaTime;
@@ -156,81 +155,133 @@ namespace SwyPhexLeague.Core
         
         private void HandleRotation()
         {
-            // Rotación en aire
             if (!isGrounded)
             {
                 float rotationInput = 0f;
                 
                 if (horizontalInput != 0)
                     rotationInput = -Mathf.Sign(horizontalInput);
-                
+                    
                 if (jumpHeld)
                     rotationInput = 1f;
-                
-                rb.angularVelocity = rotationInput * rotationSpeed;
+                    
+                transform.Rotate(0, 0, rotationInput * rotationSpeed * Time.fixedDeltaTime);
             }
             else
             {
-                // Alinear con el suelo
                 float targetAngle = Mathf.Atan2(groundNormal.y, groundNormal.x) * Mathf.Rad2Deg - 90f;
                 float currentAngle = transform.eulerAngles.z;
                 float angleDiff = Mathf.DeltaAngle(currentAngle, targetAngle);
                 
-                rb.angularVelocity = -angleDiff * turnSpeed;
+                transform.Rotate(0, 0, -angleDiff * turnSpeed * Time.fixedDeltaTime);
             }
         }
         
-        private void HandleJump()
+        private void HandleJumpInput()
         {
-            if (jumpInput && isGrounded)
+            if (jumpInput && (isGrounded || Time.time - lastJumpTime < jumpGracePeriod))
             {
-                float jumpPower = jumpForce;
+                PerformJump();
+            }
+            
+            if (InputManager.Instance.GetDoubleTapJump() && canDash)
+            {
+                PerformDash();
+            }
+        }
+        
+        private void PerformJump()
+        {
+            float jumpPower = jumpForce;
+            
+            if (jumpHeld)
+                jumpPower *= 1.2f;
                 
-                // Impulso extra si se mantiene
-                if (jumpHeld)
-                    jumpPower *= 1.2f;
-                
-                rb.AddForce(Vector2.up * jumpPower, ForceMode2D.Impulse);
-                isJumping = true;
-                
-                // Consumo de boost
-                boostSystem?.UseBoost(5f);
-                
-                // Efectos
-                AudioManager.Instance.PlaySFX("Jump");
-                SpawnJumpParticles();
+            rb.AddForce(Vector2.up * jumpPower, ForceMode2D.Impulse);
+            isJumping = true;
+            lastJumpTime = Time.time;
+            
+            boostSystem?.UseBoost(5f);
+            
+            Managers.AudioManager.Instance?.PlaySFX("Jump");
+            
+            if (jumpParticles)
+            {
+                jumpParticles.Play();
+            }
+        }
+        
+        private void PerformDash()
+        {
+            if (!boostSystem?.UseDash() ?? true) return;
+            
+            Vector2 dashDirection = rb.velocity.normalized;
+            if (dashDirection.magnitude < 0.1f)
+            {
+                dashDirection = transform.right;
+            }
+            
+            rb.AddForce(dashDirection * dashForce, ForceMode2D.Impulse);
+            canDash = false;
+            Invoke(nameof(ResetDash), dashCooldown);
+            
+            Managers.AudioManager.Instance?.PlaySFX("Dash");
+        }
+        
+        private void ResetDash()
+        {
+            canDash = true;
+        }
+        
+        private void HandleBoost()
+        {
+            if (boostInput && boostSystem?.HasBoost() == true)
+            {
+                boostSystem.UseBoost();
+                if (boostParticles && !boostParticles.isPlaying)
+                    boostParticles.Play();
+            }
+            else if (boostParticles && boostParticles.isPlaying)
+            {
+                boostParticles.Stop();
+            }
+        }
+        
+        private void HandleAbility()
+        {
+            if (abilityInput)
+            {
+                abilitySystem?.ActivateAbility();
             }
         }
         
         private void UpdateVisuals()
         {
-            // Trail effects
             bool shouldEmit = isGrounded && Mathf.Abs(rb.velocity.x) > 2f;
             foreach (var trail in trails)
             {
-                trail.emitting = shouldEmit;
-                if (boostSystem.IsBoosting)
-                    trail.startColor = Color.cyan;
-                else
-                    trail.startColor = Color.white;
+                if (trail)
+                {
+                    trail.emitting = shouldEmit;
+                    trail.startColor = (boostSystem?.IsBoosting == true) ? 
+                        Color.cyan : Color.white;
+                }
             }
-        }
-        
-        private void SpawnJumpParticles()
-        {
-            // Pool de partículas
-            GameObject particles = ObjectPool.Instance.GetPooledObject("JumpParticles");
-            if (particles)
+            
+            if (spriteRenderer && boostSystem?.IsBoosting == true)
             {
-                particles.transform.position = transform.position;
-                particles.SetActive(true);
+                spriteRenderer.color = Color.Lerp(Color.white, Color.cyan, 
+                    Mathf.PingPong(Time.time * 2f, 0.3f));
+            }
+            else if (spriteRenderer)
+            {
+                spriteRenderer.color = Color.white;
             }
         }
         
-        public void ApplyDash(Vector2 direction, float force)
+        public void ApplyExternalForce(Vector2 force, ForceMode2D mode = ForceMode2D.Impulse)
         {
-            rb.AddForce(direction.normalized * force, ForceMode2D.Impulse);
-            AudioManager.Instance.PlaySFX("Dash");
+            rb.AddForce(force, mode);
         }
         
         public void ResetVelocity()
@@ -239,10 +290,25 @@ namespace SwyPhexLeague.Core
             rb.angularVelocity = 0f;
         }
         
-        // Propiedades públicas
+        public void TeleportTo(Vector2 position)
+        {
+            rb.position = position;
+            ResetVelocity();
+        }
+        
         public bool IsGrounded => isGrounded;
+        public bool IsJumping => isJumping;
         public bool IsBoosting => boostSystem?.IsBoosting ?? false;
         public float CurrentSpeed => Mathf.Abs(rb.velocity.x);
         public Rigidbody2D Rigidbody => rb;
+        
+        private void OnCollisionEnter2D(Collision2D collision)
+        {
+            if (collision.gameObject.CompareTag("Ball"))
+            {
+                Managers.AudioManager.Instance?.PlaySFX("CarHit", 
+                    Mathf.Clamp01(collision.relativeVelocity.magnitude / 15f));
+            }
+        }
     }
 }
