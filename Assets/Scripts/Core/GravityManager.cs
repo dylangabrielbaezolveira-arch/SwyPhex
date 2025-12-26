@@ -6,25 +6,6 @@ namespace SwyPhexLeague.Core
     {
         public static GravityManager Instance { get; private set; }
         
-        [Header("Gravity Settings")]
-        [SerializeField] private Vector2 baseGravity = new Vector2(0, -9.8f);
-        [SerializeField] private float gravityTransitionTime = 0.5f;
-        
-        [Header("Current State")]
-        [SerializeField] private Vector2 currentGravity;
-        [SerializeField] private GravityType currentGravityType = GravityType.Normal;
-        
-        [Header("Variable Gravity Settings")]
-        [SerializeField] private bool isVariableGravity = false;
-        [SerializeField] private float gravityChangeInterval = 30f;
-        [SerializeField] private GravityType[] gravitySequence;
-        
-        private float gravityTimer = 0f;
-        private int currentSequenceIndex = 0;
-        private Vector2 targetGravity;
-        private bool isTransitioning = false;
-        private float transitionProgress = 0f;
-        
         public enum GravityType
         {
             Normal,
@@ -33,6 +14,32 @@ namespace SwyPhexLeague.Core
             Inverted,
             ZeroG
         }
+        
+        [Header("Settings")]
+        public GravityType currentGravityType = GravityType.Normal;
+        public float gravityTransitionTime = 0.5f;
+        
+        [Header("Variable Gravity")]
+        public bool useVariableGravity = false;
+        public float gravityChangeInterval = 30f;
+        public GravityType[] gravitySequence;
+        
+        [Header("Effects")]
+        public SpriteRenderer screenOverlay;
+        public AudioSource gravitySound;
+        
+        private Vector2 currentGravity;
+        private Vector2 targetGravity;
+        private bool isTransitioning = false;
+        private float transitionTimer = 0f;
+        private float gravityTimer = 0f;
+        private int sequenceIndex = 0;
+        
+        private Vector2 normalGravity = new Vector2(0, -9.8f);
+        private Vector2 lowGravity = new Vector2(0, -3.92f);
+        private Vector2 highGravity = new Vector2(0, -17.64f);
+        private Vector2 invertedGravity = new Vector2(0, 9.8f);
+        private Vector2 zeroGravity = Vector2.zero;
         
         private void Awake()
         {
@@ -44,58 +51,69 @@ namespace SwyPhexLeague.Core
             else
             {
                 Destroy(gameObject);
+                return;
             }
             
-            currentGravity = baseGravity;
-            targetGravity = baseGravity;
-            Physics2D.gravity = currentGravity;
+            InitializeGravity();
         }
         
-        private void Start()
+        private void InitializeGravity()
         {
-            if (isVariableGravity && gravitySequence.Length > 0)
+            currentGravity = GetGravityVector(currentGravityType);
+            targetGravity = currentGravity;
+            Physics2D.gravity = currentGravity;
+            
+            if (useVariableGravity && gravitySequence.Length > 0)
             {
-                StartVariableGravity();
+                sequenceIndex = 0;
+                gravityTimer = 0f;
             }
         }
         
         private void Update()
         {
-            // Manejar transiciones de gravedad
+            HandleGravityTransition();
+            
+            if (useVariableGravity)
+            {
+                HandleVariableGravity();
+            }
+        }
+        
+        private void HandleGravityTransition()
+        {
             if (isTransitioning)
             {
-                transitionProgress += Time.deltaTime / gravityTransitionTime;
-                currentGravity = Vector2.Lerp(
-                    currentGravity, 
-                    targetGravity, 
-                    transitionProgress
-                );
-                
+                transitionTimer += Time.deltaTime / gravityTransitionTime;
+                currentGravity = Vector2.Lerp(currentGravity, targetGravity, transitionTimer);
                 Physics2D.gravity = currentGravity;
                 
-                if (transitionProgress >= 1f)
+                UpdateTransitionEffects();
+                
+                if (transitionTimer >= 1f)
                 {
                     isTransitioning = false;
-                    transitionProgress = 0f;
+                    transitionTimer = 0f;
                 }
             }
+        }
+        
+        private void HandleVariableGravity()
+        {
+            if (gravitySequence.Length == 0) return;
             
-            // Gravedad variable
-            if (isVariableGravity)
+            gravityTimer += Time.deltaTime;
+            
+            if (gravityTimer >= gravityChangeInterval)
             {
-                gravityTimer += Time.deltaTime;
-                
-                if (gravityTimer >= gravityChangeInterval)
-                {
-                    ChangeToNextGravity();
-                    gravityTimer = 0f;
-                }
-                
-                // Aviso visual (últimos 5 segundos)
-                if (gravityTimer >= gravityChangeInterval - 5f)
-                {
-                    ShowGravityWarning();
-                }
+                sequenceIndex = (sequenceIndex + 1) % gravitySequence.Length;
+                SetGravity(gravitySequence[sequenceIndex]);
+                gravityTimer = 0f;
+            }
+            
+            if (gravityTimer >= gravityChangeInterval - 5f)
+            {
+                ShowGravityWarning(gravityChangeInterval - gravityTimer);
             }
         }
         
@@ -115,149 +133,138 @@ namespace SwyPhexLeague.Core
             {
                 targetGravity = newGravity;
                 isTransitioning = true;
-                transitionProgress = 0f;
+                transitionTimer = 0f;
                 currentGravityType = type;
                 
-                // Efectos de transición
-                OnGravityChangeStart(type);
+                PlayGravityChangeEffects(type);
             }
         }
         
         private Vector2 GetGravityVector(GravityType type)
         {
-            switch (type)
+            return type switch
             {
-                case GravityType.Normal:
-                    return new Vector2(0, -9.8f);
-                case GravityType.Low:
-                    return new Vector2(0, -3.92f); // 40%
-                case GravityType.High:
-                    return new Vector2(0, -17.64f); // 180%
-                case GravityType.Inverted:
-                    return new Vector2(0, 9.8f);
-                case GravityType.ZeroG:
-                    return Vector2.zero;
-                default:
-                    return baseGravity;
-            }
+                GravityType.Normal => normalGravity,
+                GravityType.Low => lowGravity,
+                GravityType.High => highGravity,
+                GravityType.Inverted => invertedGravity,
+                GravityType.ZeroG => zeroGravity,
+                _ => normalGravity
+            };
         }
         
-        private void StartVariableGravity()
+        private void PlayGravityChangeEffects(GravityType newType)
         {
-            currentSequenceIndex = 0;
-            SetGravity(gravitySequence[0], true);
-            
-            // Programar siguiente cambio
-            gravityTimer = 0f;
-            isVariableGravity = true;
-        }
-        
-        private void ChangeToNextGravity()
-        {
-            if (gravitySequence.Length == 0) return;
-            
-            currentSequenceIndex = (currentSequenceIndex + 1) % gravitySequence.Length;
-            SetGravity(gravitySequence[currentSequenceIndex]);
-        }
-        
-        private void ShowGravityWarning()
-        {
-            // Cambiar color de borde de pantalla
-            UIManager.Instance.ShowGravityWarning(
-                gravityChangeInterval - gravityTimer,
-                currentGravityType,
-                gravitySequence[currentSequenceIndex]
-            );
-            
-            // Sonido de advertencia
-            if (!AudioManager.Instance.IsPlaying("GravityWarning"))
+            if (gravitySound)
             {
-                AudioManager.Instance.PlaySFX("GravityWarning");
+                gravitySound.Play();
             }
-        }
-        
-        private void OnGravityChangeStart(GravityType newType)
-        {
-            // Efectos visuales
-            CameraShake.Instance.Shake(0.15f, 0.5f);
             
-            // Sonido
-            AudioManager.Instance.PlaySFX("GravityChange");
+            CameraShake.Instance?.Shake(0.15f, 0.5f);
             
-            // Efecto de pantalla completa
-            UIManager.Instance.PlayGravityTransition(newType);
+            UI.UIManager.Instance?.PlayGravityTransition(newType);
             
-            // Vibración (si está soportada)
             #if UNITY_ANDROID && !UNITY_EDITOR
-            Handheld.Vibrate();
+            if (PlayerPrefs.GetInt("HapticFeedback", 1) == 1)
+                Handheld.Vibrate();
             #endif
+        }
+        
+        private void UpdateTransitionEffects()
+        {
+            if (screenOverlay)
+            {
+                Color overlayColor = GetGravityColor(currentGravityType);
+                overlayColor.a = Mathf.Lerp(0.3f, 0f, transitionTimer);
+                screenOverlay.color = overlayColor;
+            }
+        }
+        
+        private Color GetGravityColor(GravityType type)
+        {
+            return type switch
+            {
+                GravityType.Normal => Color.white,
+                GravityType.Low => Color.blue,
+                GravityType.High => Color.red,
+                GravityType.Inverted => Color.magenta,
+                GravityType.ZeroG => Color.cyan,
+                _ => Color.white
+            };
+        }
+        
+        private void ShowGravityWarning(float timeLeft)
+        {
+            if (screenOverlay && gravitySequence.Length > 0)
+            {
+                GravityType nextType = gravitySequence[(sequenceIndex + 1) % gravitySequence.Length];
+                Color warningColor = GetGravityColor(nextType);
+                warningColor.a = Mathf.PingPong(Time.time * 3f, 0.2f);
+                screenOverlay.color = warningColor;
+            }
+            
+            UI.UIManager.Instance?.ShowGravityWarning(timeLeft, 
+                currentGravityType, 
+                gravitySequence[(sequenceIndex + 1) % gravitySequence.Length]);
         }
         
         public void SetLocalGravity(Vector2 position, float radius, Vector2 gravity, float duration)
         {
-            StartCoroutine(LocalGravityEffect(position, radius, gravity, duration));
+            StartCoroutine(LocalGravityCoroutine(position, radius, gravity, duration));
         }
         
-        private System.Collections.IEnumerator LocalGravityEffect(
-            Vector2 position, 
-            float radius, 
-            Vector2 gravity, 
-            float duration)
+        private System.Collections.IEnumerator LocalGravityCoroutine(Vector2 position, float radius, Vector2 gravity, float duration)
         {
-            // Marcar objetos en la zona
-            Collider2D[] objectsInZone = Physics2D.OverlapCircleAll(position, radius);
+            Collider2D[] colliders = Physics2D.OverlapCircleAll(position, radius);
             
-            // Aplicar gravedad local a cada objeto
-            Dictionary<Rigidbody2D, Vector2> originalGravities = new Dictionary<Rigidbody2D, Vector2>();
-            
-            foreach (var col in objectsInZone)
+            foreach (var col in colliders)
             {
                 Rigidbody2D rb = col.GetComponent<Rigidbody2D>();
-                if (rb && !originalGravities.ContainsKey(rb))
+                if (rb)
                 {
-                    originalGravities[rb] = Physics2D.gravity;
-                    
-                    // Para objetos con gravedad personalizada
-                    if (col.CompareTag("Ball") || col.CompareTag("Car"))
-                    {
-                        rb.gravityScale = 0f;
-                        rb.AddForce(gravity * rb.mass, ForceMode2D.Force);
-                    }
+                    rb.gravityScale = 0f;
+                    rb.AddForce(gravity * rb.mass, ForceMode2D.Force);
                 }
-            }
-            
-            // Efecto visual de zona
-            GameObject zoneEffect = ObjectPool.Instance.GetPooledObject("GravityZone");
-            if (zoneEffect)
-            {
-                zoneEffect.transform.position = position;
-                zoneEffect.transform.localScale = Vector3.one * radius * 2f;
-                zoneEffect.SetActive(true);
             }
             
             yield return new WaitForSeconds(duration);
             
-            // Restaurar gravedades
-            foreach (var kvp in originalGravities)
+            foreach (var col in colliders)
             {
-                if (kvp.Key)
+                Rigidbody2D rb = col.GetComponent<Rigidbody2D>();
+                if (rb)
                 {
-                    kvp.Key.gravityScale = 1f;
+                    rb.gravityScale = 1f;
                 }
-            }
-            
-            if (zoneEffect)
-            {
-                zoneEffect.SetActive(false);
             }
         }
         
-        // Propiedades públicas
         public Vector2 CurrentGravity => currentGravity;
         public GravityType CurrentGravityType => currentGravityType;
         public bool IsTransitioning => isTransitioning;
         
-        public float GravityStrength => currentGravity.magnitude;
-        public Vector2 GravityDirection => currentGravity.normalized;
+        public void ToggleVariableGravity(bool enabled)
+        {
+            useVariableGravity = enabled;
+            if (enabled)
+            {
+                gravityTimer = 0f;
+            }
+        }
+        
+        private void OnDrawGizmos()
+        {
+            if (useVariableGravity)
+            {
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawWireSphere(transform.position, 1f);
+                
+                GUI.color = Color.yellow;
+                GUIStyle style = new GUIStyle();
+                style.normal.textColor = Color.yellow;
+                UnityEditor.Handles.Label(transform.position + Vector3.up * 1.5f, 
+                    $"Variable Gravity: {gravityTimer:F1}/{gravityChangeInterval}", style);
+            }
+        }
     }
 }
