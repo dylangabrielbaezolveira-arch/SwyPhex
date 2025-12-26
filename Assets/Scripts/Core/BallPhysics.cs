@@ -1,239 +1,249 @@
 using UnityEngine;
-using UnityEngine.UI;
 
 namespace SwyPhexLeague.Core
 {
-    public class BoostSystem : MonoBehaviour
+    public class BallPhysics : MonoBehaviour
     {
-        [Header("Boost Settings")]
-        [SerializeField] private float maxBoost = 100f;
-        [SerializeField] private float startBoost = 50f;
-        [SerializeField] private float passiveRegen = 2f; // por segundo
-        [SerializeField] private float boostConsumption = 12f; // por segundo
-        [SerializeField] private float dashCost = 18f;
+        [Header("Physics Settings")]
+        [SerializeField] private float baseBounce = 0.8f;
+        [SerializeField] private float maxSpeed = 30f;
+        [SerializeField] private float curveFactor = 0.3f;
+        [SerializeField] private float gravityInfluence = 0.5f;
         
-        [Header("UI Reference")]
-        [SerializeField] private Image boostBar;
-        [SerializeField] private Text boostText;
+        [Header("Visual Effects")]
+        [SerializeField] private TrailRenderer trail;
+        [SerializeField] private ParticleSystem hitParticles;
+        [SerializeField] private GameObject glowEffect;
         
-        [Header("State")]
-        private float currentBoost;
-        private bool isBoosting;
-        private float boostMultiplier = 1f;
-        private float penaltyTimer = 0f;
+        private Rigidbody2D rb;
+        private Collider2D col;
+        private Vector2 lastVelocity;
+        private Vector2 gravityDirection = Vector2.down;
         
-        // Propiedades cosméticas
-        private Color boostColor = Color.cyan;
-        private ParticleSystem boostParticles;
-        private AudioSource boostSound;
+        // Estado especial
+        private bool isMagnetized = false;
+        private Transform magnetTarget = null;
+        private float magnetStrength = 0f;
         
-        private void Start()
+        private void Awake()
         {
-            currentBoost = startBoost;
-            UpdateUI();
+            rb = GetComponent<Rigidbody2D>();
+            col = GetComponent<Collider2D>();
             
-            boostParticles = GetComponentInChildren<ParticleSystem>();
-            boostSound = GetComponent<AudioSource>();
-            
-            if (boostSound)
+            // Configurar física
+            rb.mass = 0.5f;
+            rb.drag = 0.1f;
+            rb.angularDrag = 0.2f;
+            rb.sharedMaterial = new PhysicsMaterial2D()
             {
-                boostSound.loop = true;
-                boostSound.volume = 0.3f;
-            }
+                bounciness = baseBounce,
+                friction = 0.1f
+            };
         }
         
-        private void Update()
+        private void FixedUpdate()
         {
-            // Regeneración pasiva
-            if (!isBoosting && penaltyTimer <= 0f)
+            // Limitar velocidad máxima
+            if (rb.velocity.magnitude > maxSpeed)
             {
-                RegenerateBoost(passiveRegen * Time.deltaTime);
+                rb.velocity = rb.velocity.normalized * maxSpeed;
             }
             
-            // Consumo activo
-            if (isBoosting)
+            // Aplicar influencia de gravedad
+            ApplyGravityInfluence();
+            
+            // Efecto de magnetismo
+            if (isMagnetized && magnetTarget)
             {
-                float consumption = boostConsumption * Time.deltaTime * boostMultiplier;
-                UseBoost(consumption);
+                ApplyMagnetism();
             }
             
-            // Penalización por spam
-            if (penaltyTimer > 0f)
+            // Efecto visual de velocidad
+            UpdateTrail();
+            
+            lastVelocity = rb.velocity;
+        }
+        
+        private void OnCollisionEnter2D(Collision2D collision)
+        {
+            // Calcular fuerza del golpe
+            float hitStrength = collision.relativeVelocity.magnitude;
+            
+            // Efecto de sonido
+            AudioManager.Instance.PlaySFX("BallHit", Mathf.Clamp01(hitStrength / 20f));
+            
+            // Partículas
+            if (hitParticles && hitStrength > 3f)
             {
-                penaltyTimer -= Time.deltaTime;
+                ContactPoint2D contact = collision.GetContact(0);
+                hitParticles.transform.position = contact.point;
+                hitParticles.Play();
             }
             
-            UpdateUI();
-            UpdateEffects();
-        }
-        
-        public void UseBoost(float amount = 0f)
-        {
-            if (amount == 0f)
+            // Bonus de boost para el jugador que golpea
+            CarController car = collision.gameObject.GetComponent<CarController>();
+            if (car && hitStrength > 5f)
             {
-                isBoosting = true;
-                return;
-            }
-            
-            currentBoost -= amount;
-            if (currentBoost <= 0f)
-            {
-                currentBoost = 0f;
-                isBoosting = false;
-                ApplyBoostPenalty();
-            }
-        }
-        
-        public void StopBoosting()
-        {
-            isBoosting = false;
-        }
-        
-        public void RegenerateBoost(float amount)
-        {
-            currentBoost = Mathf.Min(currentBoost + amount, maxBoost);
-        }
-        
-        public bool UseDash()
-        {
-            if (currentBoost >= dashCost)
-            {
-                currentBoost -= dashCost;
+                car.GetComponent<BoostSystem>()?.RegenerateBoost(10f);
                 
-                // Verificar spam de dash
-                CheckDashSpam();
-                
-                return true;
+                // Efecto visual de golpe fuerte
+                if (hitStrength > 15f)
+                {
+                    CameraShake.Instance.Shake(0.1f, 0.3f);
+                    SpawnHitEffect(collision.GetContact(0).point);
+                }
             }
-            return false;
-        }
-        
-        public bool UseAbilityBoost(float extraCost)
-        {
-            float totalCost = 5f + extraCost;
-            if (currentBoost >= totalCost)
-            {
-                currentBoost -= totalCost;
-                return true;
-            }
-            return false;
-        }
-        
-        public void AddBoostOrb(float amount = 30f)
-        {
-            RegenerateBoost(amount);
-            AudioManager.Instance.PlaySFX("BoostPickup");
             
-            // Efecto visual
-            GameObject effect = ObjectPool.Instance.GetPooledObject("BoostPickup");
+            // Efecto de curva (Magnus effect simplificado)
+            if (rb.angularVelocity != 0 && hitStrength > 8f)
+            {
+                ApplyCurveEffect();
+            }
+        }
+        
+        private void ApplyGravityInfluence()
+        {
+            Vector2 currentGravity = GravityManager.Instance.CurrentGravity;
+            
+            // Solo aplicar si no es gravedad normal
+            if (currentGravity != Vector2.down)
+            {
+                rb.AddForce(currentGravity * gravityInfluence * rb.mass);
+            }
+        }
+        
+        private void ApplyCurveEffect()
+        {
+            // Efecto Magnus simplificado
+            Vector2 curveForce = new Vector2(
+                -rb.angularVelocity * curveFactor * rb.velocity.y,
+                rb.angularVelocity * curveFactor * rb.velocity.x
+            ) * 0.01f;
+            
+            rb.AddForce(curveForce);
+        }
+        
+        private void ApplyMagnetism()
+        {
+            Vector2 direction = (magnetTarget.position - transform.position);
+            float distance = direction.magnitude;
+            
+            if (distance > 0.1f)
+            {
+                float strength = magnetStrength / (distance * distance);
+                rb.AddForce(direction.normalized * strength);
+            }
+        }
+        
+        private void UpdateTrail()
+        {
+            if (trail)
+            {
+                float speedRatio = rb.velocity.magnitude / maxSpeed;
+                trail.time = Mathf.Lerp(0.1f, 0.5f, speedRatio);
+                trail.startWidth = Mathf.Lerp(0.1f, 0.3f, speedRatio);
+                
+                // Cambiar color según velocidad
+                Gradient gradient = new Gradient();
+                gradient.SetKeys(
+                    new GradientColorKey[] {
+                        new GradientColorKey(Color.white, 0f),
+                        new GradientColorKey(
+                            Color.Lerp(Color.yellow, Color.red, speedRatio), 
+                            1f
+                        )
+                    },
+                    new GradientAlphaKey[] {
+                        new GradientAlphaKey(0.8f, 0f),
+                        new GradientAlphaKey(0f, 1f)
+                    }
+                );
+                trail.colorGradient = gradient;
+            }
+        }
+        
+        private void SpawnHitEffect(Vector2 position)
+        {
+            GameObject effect = ObjectPool.Instance.GetPooledObject("BallImpact");
             if (effect)
             {
-                effect.transform.position = transform.position;
+                effect.transform.position = position;
                 effect.SetActive(true);
             }
         }
         
-        private void CheckDashSpam()
+        // API pública para efectos especiales
+        public void SetMagnetized(Transform target, float strength, float duration)
         {
-            // Lógica de detección de spam (simplificada)
-            penaltyTimer += 0.5f;
-            if (penaltyTimer >= 2f)
+            isMagnetized = true;
+            magnetTarget = target;
+            magnetStrength = strength;
+            
+            CancelInvoke("RemoveMagnetism");
+            Invoke("RemoveMagnetism", duration);
+            
+            // Efecto visual
+            if (glowEffect)
             {
-                penaltyTimer = 4f; // Penalización máxima
-                passiveRegen = 0f; // Sin regeneración por 4s
+                glowEffect.SetActive(true);
+                glowEffect.GetComponent<SpriteRenderer>().color = Color.blue;
             }
         }
         
-        private void ApplyBoostPenalty()
+        private void RemoveMagnetism()
         {
-            // Reducción de velocidad cuando se acaba el boost
-            CarController car = GetComponent<CarController>();
-            if (car)
+            isMagnetized = false;
+            magnetTarget = null;
+            magnetStrength = 0f;
+            
+            if (glowEffect)
             {
-                StartCoroutine(SpeedPenaltyCoroutine(car));
+                glowEffect.SetActive(false);
             }
         }
         
-        private System.Collections.IEnumerator SpeedPenaltyCoroutine(CarController car)
+        public void ApplyGravityShock(Vector2 gravityDirection, float duration)
         {
-            float originalMaxSpeed = 15f;
-            car.GetComponent<CarController>().enabled = false;
+            Vector2 force = gravityDirection * 15f;
+            rb.AddForce(force, ForceMode2D.Impulse);
             
-            // Aplicar fuerza contraria
-            Vector2 oppositeForce = -car.Rigidbody.velocity * 0.3f;
-            car.Rigidbody.AddForce(oppositeForce, ForceMode2D.Impulse);
-            
-            yield return new WaitForSeconds(2f);
-            
-            car.GetComponent<CarController>().enabled = true;
-            penaltyTimer = 0f;
-            passiveRegen = 2f; // Restaurar regeneración
+            // Efecto visual
+            StartCoroutine(GravityShockEffect(duration));
         }
         
-        private void UpdateUI()
+        private System.Collections.IEnumerator GravityShockEffect(float duration)
         {
-            if (boostBar)
+            if (glowEffect)
             {
-                float fillAmount = currentBoost / maxBoost;
-                boostBar.fillAmount = fillAmount;
-                boostBar.color = Color.Lerp(Color.red, boostColor, fillAmount);
-            }
-            
-            if (boostText)
-            {
-                boostText.text = Mathf.RoundToInt(currentBoost).ToString();
-            }
-        }
-        
-        private void UpdateEffects()
-        {
-            // Partículas de boost
-            if (boostParticles)
-            {
-                var emission = boostParticles.emission;
-                emission.enabled = isBoosting && currentBoost > 0;
+                glowEffect.SetActive(true);
+                glowEffect.GetComponent<SpriteRenderer>().color = Color.magenta;
                 
-                var main = boostParticles.main;
-                main.startColor = boostColor;
+                yield return new WaitForSeconds(duration);
+                
+                if (!isMagnetized)
+                {
+                    glowEffect.SetActive(false);
+                }
             }
+        }
+        
+        public void ResetBall(Vector2 position)
+        {
+            transform.position = position;
+            rb.velocity = Vector2.zero;
+            rb.angularVelocity = 0f;
+            isMagnetized = false;
+            magnetTarget = null;
             
-            // Sonido de boost
-            if (boostSound)
+            if (glowEffect)
             {
-                if (isBoosting && currentBoost > 0 && !boostSound.isPlaying)
-                {
-                    boostSound.Play();
-                }
-                else if ((!isBoosting || currentBoost <= 0) && boostSound.isPlaying)
-                {
-                    boostSound.Stop();
-                }
+                glowEffect.SetActive(false);
             }
         }
         
         // Propiedades públicas
-        public float CurrentBoost => currentBoost;
-        public float BoostPercentage => currentBoost / maxBoost;
-        public bool IsBoosting => isBoosting;
-        public bool HasBoost(float required = 20f) => currentBoost >= required;
-        
-        // Personalización
-        public void SetBoostColor(Color color)
-        {
-            boostColor = color;
-        }
-        
-        public void SetBoostParticles(ParticleSystem particles)
-        {
-            boostParticles = particles;
-        }
-        
-        public void SetBoostSound(AudioClip clip)
-        {
-            if (boostSound)
-            {
-                boostSound.clip = clip;
-            }
-        }
+        public Vector2 Velocity => rb.velocity;
+        public bool IsMagnetized => isMagnetized;
+        public float Speed => rb.velocity.magnitude;
     }
 }
